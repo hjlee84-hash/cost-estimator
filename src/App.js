@@ -68,21 +68,24 @@ function calcPartCost(part, sopYear, totalAnnualQty) {
   };
 }
 
-async function parseBomWithAI(imageData, mimeType) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+// Gemini API 호출
+async function callGemini(body) {
+  const res = await fetch("/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6", max_tokens: 1000,
-      messages: [{ role: "user", content: [
-        { type: "image", source: { type: "base64", media_type: mimeType, data: imageData } },
-        { type: "text", text: `이 BOM 이미지에서 부품 정보를 추출해줘. W, L, T 값이 있는 부품만 추출하고, 없으면 null로. 반드시 아래 JSON 배열만 응답해. 다른 텍스트 없이.\n[{"no":1,"name":"MTG PLATE","material":"AA3003 H16","w":159,"l":109,"t":4,"qty":1,"weight":"143.0g","remark":""},...]` }
-      ]}]
-    })
+    body: JSON.stringify(body),
   });
   const data = await res.json();
-  const text = data.content?.[0]?.text || "[]";
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
   return JSON.parse(text.replace(/```json|```/g, "").trim());
+}
+
+async function parseBomWithAI(imageData, mimeType) {
+  return callGemini({ imageData, mimeType });
+}
+
+async function parseBomText(textPrompt) {
+  return callGemini({ textPrompt });
 }
 
 function downloadExcel(project, totalQty) {
@@ -150,7 +153,6 @@ function CostDetail({ part, sopYear, totalQty }) {
   );
 }
 
-// ── 클립보드 붙여넣기 영역 ──
 function PasteZone({ onImage, onText }) {
   const [dragOver, setDragOver] = useState(false);
   const zoneRef = useRef(null);
@@ -188,17 +190,15 @@ function PasteZone({ onImage, onText }) {
         reader.readAsDataURL(file);
       }}
       style={{
-        border: `2px dashed ${dragOver ? "#2563eb" : "#cbd5e1"}`,
-        borderRadius: 8, padding: "18px 14px", textAlign: "center",
-        background: dragOver ? "#eff6ff" : "#f8fafc", cursor: "pointer",
-        transition: "all 0.2s", marginTop: 10,
+        border:`2px dashed ${dragOver?"#2563eb":"#cbd5e1"}`,
+        borderRadius:8, padding:"18px 14px", textAlign:"center",
+        background:dragOver?"#eff6ff":"#f8fafc", cursor:"pointer",
+        transition:"all 0.2s", marginTop:10,
       }}
-      onClick={() => zoneRef.current?.focus()}
-      tabIndex={0}
     >
       <div style={{fontSize:22,marginBottom:4}}>📋</div>
       <div style={{fontSize:12,color:"#64748b",fontWeight:600}}>
-        BOM 화면을 캡처 후 <kbd style={{background:"#e2e8f0",borderRadius:3,padding:"1px 5px",fontSize:11}}>Ctrl+V</kbd> 로 붙여넣기
+        BOM 화면 캡처 후 <kbd style={{background:"#e2e8f0",borderRadius:3,padding:"1px 5px",fontSize:11}}>Ctrl+V</kbd> 로 붙여넣기
       </div>
       <div style={{fontSize:11,color:"#94a3b8",marginTop:4}}>또는 이미지 파일을 여기로 드래그</div>
     </div>
@@ -264,17 +264,7 @@ export default function App() {
     if (!active) return;
     setLoading(true); setShowPaste(false);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6", max_tokens: 1000,
-          messages: [{ role: "user", content: `아래 BOM 텍스트에서 부품 정보를 추출해줘. W,L,T 있는 부품만. JSON 배열만 응답.\n[{"no":1,"name":"MTG PLATE","material":"AA3003 H16","w":159,"l":109,"t":4,"qty":1,"weight":"143.0g","remark":""},...]\n\nBOM:\n${text}` }]
-        })
-      });
-      const data = await res.json();
-      const raw = data.content?.[0]?.text || "[]";
-      const parts = JSON.parse(raw.replace(/```json|```/g,"").trim());
+      const parts = await parseBomText(text);
       updateProject(active.id, p => ({ ...p, parts }));
     } catch (err) { alert("BOM 파싱 실패: " + err.message); }
     setLoading(false);
@@ -298,7 +288,6 @@ export default function App() {
 
   return (
     <div style={{fontFamily:"'Malgun Gothic', sans-serif", display:"flex"}}>
-      {/* 사이드바 */}
       <div style={s.sidebar}>
         <div style={{fontSize:13,fontWeight:700,marginBottom:16,color:"#7eb8f7",letterSpacing:1}}>⚙ 원가산출 시스템</div>
         <div style={{fontSize:11,color:"#8899aa",marginBottom:8}}>프로젝트 목록</div>
@@ -324,7 +313,6 @@ export default function App() {
         )}
       </div>
 
-      {/* 메인 */}
       <div style={s.main}>
         {!active ? (
           <div style={{textAlign:"center",marginTop:80,color:"#9ca3af"}}>
@@ -347,23 +335,19 @@ export default function App() {
                     </select>
                   </div>
                   <button onClick={()=>setShowPaste(!showPaste)} style={s.btn(showPaste?"#64748b":"#2563eb")}>
-                    {loading ? "인식 중..." : "📋 BOM 붙여넣기"}
+                    {loading?"인식 중...":"📋 BOM 붙여넣기"}
                   </button>
                   <button onClick={()=>downloadExcel(active,totalQty)} style={s.btn("#16a34a")}>⬇ 엑셀 다운로드</button>
                 </div>
               </div>
 
-              {/* 붙여넣기 영역 */}
-              {showPaste && !loading && (
-                <PasteZone onImage={handleBomImage} onText={handleBomText} />
-              )}
+              {showPaste && !loading && <PasteZone onImage={handleBomImage} onText={handleBomText}/>}
               {loading && (
                 <div style={{textAlign:"center",padding:16,color:"#2563eb",fontWeight:700,fontSize:13}}>
                   🤖 AI가 BOM을 분석 중입니다...
                 </div>
               )}
 
-              {/* 연도별 수량 */}
               <div style={{marginTop:16,borderTop:"1px solid #f3f4f6",paddingTop:14}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                   <div style={{fontSize:12,fontWeight:700,color:"#374151"}}>📦 연도별 생산 수량 (개/년)</div>
@@ -371,20 +355,14 @@ export default function App() {
                 </div>
                 <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-end"}}>
                   {Object.keys(active.annualQty).sort().map(y=>(
-                    <div key={y} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3,position:"relative"}}>
+                    <div key={y} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
                       <div style={{display:"flex",alignItems:"center",gap:2}}>
                         <label style={{fontSize:10,color:"#6b7280"}}>{y}년</label>
                         {Object.keys(active.annualQty).length > 1 && (
-                          <button onClick={()=>removeYear(y)} style={{background:"none",border:"none",color:"#dc2626",cursor:"pointer",fontSize:10,padding:0,lineHeight:1}}>×</button>
+                          <button onClick={()=>removeYear(y)} style={{background:"none",border:"none",color:"#dc2626",cursor:"pointer",fontSize:10,padding:0}}>×</button>
                         )}
                       </div>
-                      <input
-                        type="number"
-                        value={active.annualQty[y]??""}
-                        onChange={e=>updateProject(active.id,p=>({...p,annualQty:{...p.annualQty,[y]:e.target.value}}))}
-                        style={{...s.input,width:72,textAlign:"center",fontSize:12,padding:"4px 5px"}}
-                        placeholder="0"
-                      />
+                      <input type="number" value={active.annualQty[y]??""} onChange={e=>updateProject(active.id,p=>({...p,annualQty:{...p.annualQty,[y]:e.target.value}}))} style={{...s.input,width:72,textAlign:"center",fontSize:12,padding:"4px 5px"}} placeholder="0"/>
                     </div>
                   ))}
                   <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
@@ -395,17 +373,16 @@ export default function App() {
               </div>
             </div>
 
-            {/* 부품 카드 */}
             {active.parts.length === 0 ? (
               <div style={{textAlign:"center",padding:60,color:"#9ca3af",background:"#fff",borderRadius:10}}>
                 <div style={{fontSize:36,marginBottom:12}}>📋</div>
-                <p>상단 "BOM 붙여넣기" 버튼을 누른 후 Ctrl+V로 붙여넣으세요</p>
+                <p>"BOM 붙여넣기" 버튼 클릭 후 Ctrl+V로 붙여넣으세요</p>
               </div>
             ) : (
               <>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(340px, 1fr))",gap:14}}>
                   {active.parts.map((part,idx)=>{
-                    const cost = calcPartCost(part, active.sopYear, totalQty);
+                    const cost = calcPartCost(part,active.sopYear,totalQty);
                     return (
                       <div key={idx} style={{...s.card,marginBottom:0,border:expandedPart===idx?"2px solid #2563eb":"2px solid transparent"}}>
                         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -446,7 +423,7 @@ export default function App() {
                       </thead>
                       <tbody>
                         {active.parts.map((p,i)=>{
-                          const c = calcPartCost(p, active.sopYear, totalQty);
+                          const c = calcPartCost(p,active.sopYear,totalQty);
                           if (!c) return null;
                           return (
                             <tr key={i} style={{borderBottom:"1px solid #263447"}}>
